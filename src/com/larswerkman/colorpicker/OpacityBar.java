@@ -1,3 +1,19 @@
+/*
+ * Copyright 2012 Lars Werkman
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 package com.larswerkman.colorpicker;
 
 import android.content.Context;
@@ -21,8 +37,8 @@ public class OpacityBar extends View {
 	 * Constants used to save/restore the instance state.
 	 */
 	private static final String STATE_PARENT = "parent";
-	private static final String STATE_POSITION = "position";
 	private static final String STATE_COLOR = "color";
+	private static final String STATE_OPACITY = "opacity";
 
 	/**
 	 * The thickness of the bar.
@@ -33,6 +49,7 @@ public class OpacityBar extends View {
 	 * The length of the bar.
 	 */
 	private int mBarLength;
+	private int mPreferredBarLength;
 
 	/**
 	 * The radius of the pointer.
@@ -133,6 +150,7 @@ public class OpacityBar extends View {
 				b.getDimensionPixelSize(R.dimen.bar_thickness));
 		mBarLength = a.getDimensionPixelSize(R.styleable.ColorBars_bar_length,
 				b.getDimensionPixelSize(R.dimen.bar_length));
+		mPreferredBarLength = mBarLength;
 		mBarPointerRadius = a.getDimensionPixelSize(
 				R.styleable.ColorBars_bar_pointer_radius,
 				b.getDimensionPixelSize(R.dimen.bar_pointer_radius));
@@ -141,11 +159,6 @@ public class OpacityBar extends View {
 				b.getDimensionPixelSize(R.dimen.bar_pointer_halo_radius));
 
 		a.recycle();
-
-		shader = new LinearGradient(mBarPointerHaloRadius, 0,
-				(mBarLength + mBarPointerHaloRadius), mBarThickness, new int[] {
-						0x0081ff00, 0xff81ff00 }, null, Shader.TileMode.CLAMP);
-		Color.colorToHSV(0xff81ff00, mHSVColor);
 
 		mBarPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 		mBarPaint.setShader(shader);
@@ -165,16 +178,63 @@ public class OpacityBar extends View {
 
 	@Override
 	protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
+		final int intrinsicSize = mPreferredBarLength
+				+ (mBarPointerHaloRadius * 2);
+
+		int widthMode = MeasureSpec.getMode(widthMeasureSpec);
+		int widthSize = MeasureSpec.getSize(widthMeasureSpec);
+
+		int width;
+		if (widthMode == MeasureSpec.EXACTLY) {
+			width = widthSize;
+		} else if (widthMode == MeasureSpec.AT_MOST) {
+			width = Math.min(intrinsicSize, widthSize);
+		} else {
+			width = intrinsicSize;
+		}
+
+		mBarLength = width - (mBarPointerHaloRadius * 2);
 		setMeasuredDimension((mBarLength + (mBarPointerHaloRadius * 2)),
 				(mBarPointerHaloRadius * 2));
+	}
+
+	@Override
+	protected void onSizeChanged(int w, int h, int oldw, int oldh) {
+		super.onSizeChanged(w, h, oldw, oldh);
+		mBarLength = w - (mBarPointerHaloRadius * 2);
 
 		// Fill the rectangle instance.
 		mBarRect.set(mBarPointerHaloRadius,
 				(mBarPointerHaloRadius - (mBarThickness / 2)),
 				(mBarLength + (mBarPointerHaloRadius)),
 				(mBarPointerHaloRadius + (mBarThickness / 2)));
+
+		// Update variables that depend of mBarLength.
+		if(!isInEditMode()){
+			shader = new LinearGradient(mBarPointerHaloRadius, 0,
+					(mBarLength + mBarPointerHaloRadius), mBarThickness, new int[] {
+							Color.HSVToColor(0x00, mHSVColor),
+							Color.HSVToColor(0xFF, mHSVColor) }, null,
+					Shader.TileMode.CLAMP);
+		} else {
+			shader = new LinearGradient(mBarPointerHaloRadius, 0,
+					(mBarLength + mBarPointerHaloRadius), mBarThickness, new int[] {
+							0x0081ff00, 0xff81ff00 }, null, Shader.TileMode.CLAMP);
+			Color.colorToHSV(0xff81ff00, mHSVColor);
+		}
+		
+		mBarPaint.setShader(shader);
+		mPosToOpacFactor = 0xFF / ((float) mBarLength);
+		mOpacToPosFactor = ((float) mBarLength) / 0xFF;
+		if(!isInEditMode()){
+			mBarPointerPosition = Math.round((mOpacToPosFactor * Color
+					.alpha(mColor))) + mBarPointerHaloRadius;
+		} else {
+			mBarPointerPosition = mBarLength + mBarPointerHaloRadius;
+		}
 	}
 
+	@Override
 	protected void onDraw(Canvas canvas) {
 		// Draw the bar.
 		canvas.drawRect(mBarRect, mBarPaint);
@@ -188,20 +248,20 @@ public class OpacityBar extends View {
 
 	@Override
 	public boolean onTouchEvent(MotionEvent event) {
+		getParent().requestDisallowInterceptTouchEvent(true);
+
 		// Convert coordinates to our internal coordinate system
 		float x = event.getX();
-		float y = event.getY();
 
 		switch (event.getAction()) {
 		case MotionEvent.ACTION_DOWN:
+		    	mIsMovingPointer = true;
 			// Check whether the user pressed on (or near) the pointer
 			if (x >= (mBarPointerHaloRadius)
-					&& x <= (mBarPointerHaloRadius + mBarLength) && y >= 0
-					&& y <= (mBarPointerHaloRadius * 2)) {
-				mBarPointerPosition = (int) x;
-				calculateColor((int) x);
+					&& x <= (mBarPointerHaloRadius + mBarLength)) {
+				mBarPointerPosition = Math.round(x);
+				calculateColor(Math.round(x));
 				mBarPointerPaint.setColor(mColor);
-				mIsMovingPointer = true;
 				invalidate();
 			}
 			break;
@@ -210,8 +270,8 @@ public class OpacityBar extends View {
 				// Move the the pointer on the bar.
 				if (x >= mBarPointerHaloRadius
 						&& x <= (mBarPointerHaloRadius + mBarLength)) {
-					mBarPointerPosition = (int) x;
-					calculateColor((int) x);
+					mBarPointerPosition = Math.round(x);
+					calculateColor(Math.round(x));
 					mBarPointerPaint.setColor(mColor);
 					if (mPicker != null) {
 						mPicker.setNewCenterColor(mColor);
@@ -272,7 +332,7 @@ public class OpacityBar extends View {
 	 *            float between 0 > 255
 	 */
 	public void setOpacity(int opacity) {
-		mBarPointerPosition = (int) (mOpacToPosFactor * opacity)
+		mBarPointerPosition = Math.round((mOpacToPosFactor * opacity))
 				+ mBarPointerHaloRadius;
 		calculateColor(mBarPointerPosition);
 		mBarPointerPaint.setColor(mColor);
@@ -288,7 +348,8 @@ public class OpacityBar extends View {
 	 * @return The int value of the currently selected opacity.
 	 */
 	public int getOpacity() {
-		int opacity = (int) (mPosToOpacFactor * (mBarPointerPosition - mBarPointerHaloRadius));
+		int opacity = Math
+				.round((mPosToOpacFactor * (mBarPointerPosition - mBarPointerHaloRadius)));
 		if (opacity < 5) {
 			return 0x00;
 		} else if (opacity > 250) {
@@ -304,19 +365,23 @@ public class OpacityBar extends View {
 	 * @param x
 	 *            X-Coordinate of the pointer.
 	 */
-	private void calculateColor(int x) {
-		if (x >= mBarPointerHaloRadius
-				&& x <= (mBarPointerHaloRadius + mBarLength)) {
-			mColor = Color.HSVToColor(
-					(int) (mPosToOpacFactor * (x - mBarPointerHaloRadius)),
-					mHSVColor);
-		}
-		if (Color.alpha(mColor) > 250) {
-			mColor = Color.HSVToColor(mHSVColor);
-		} else if (Color.alpha(mColor) < 5) {
-			mColor = Color.TRANSPARENT;
-		}
-	}
+        private void calculateColor(int x) {
+    		x = x - mBarPointerHaloRadius;
+    		if (x < 0) {
+    		    x = 0;
+    		} else if (x > mBarLength) {
+    		    x = mBarLength;
+    		}
+
+    		mColor = Color.HSVToColor(
+    			Math.round(mPosToOpacFactor * x),
+    			mHSVColor);
+    		if (Color.alpha(mColor) > 250) {
+    		    mColor = Color.HSVToColor(mHSVColor);
+    		} else if (Color.alpha(mColor) < 5) {
+    		    mColor = Color.TRANSPARENT;
+    		}
+        }
 
 	/**
 	 * Get the currently selected color.
@@ -346,8 +411,8 @@ public class OpacityBar extends View {
 
 		Bundle state = new Bundle();
 		state.putParcelable(STATE_PARENT, superState);
-		state.putInt(STATE_POSITION, mBarPointerPosition);
 		state.putFloatArray(STATE_COLOR, mHSVColor);
+		state.putInt(STATE_OPACITY, getOpacity());
 
 		return state;
 	}
@@ -359,7 +424,7 @@ public class OpacityBar extends View {
 		Parcelable superState = savedState.getParcelable(STATE_PARENT);
 		super.onRestoreInstanceState(superState);
 
-		mBarPointerPosition = savedState.getInt(STATE_POSITION);
 		setColor(Color.HSVToColor(savedState.getFloatArray(STATE_COLOR)));
+		setOpacity(savedState.getInt(STATE_OPACITY));
 	}
 }
